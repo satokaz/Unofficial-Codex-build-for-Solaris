@@ -1,4 +1,4 @@
-# Unofficial-Codex-build-for-Solaris
+# Unofficial Codex build for Solaris 11.4
 This repository provides an unofficial Solaris build of Codex.
 
 This is an experimental build. Correct operation is not guaranteed.
