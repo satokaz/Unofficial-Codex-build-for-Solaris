@@ -1,8 +1,12 @@
 # Unofficial-Codex-build-for-Solaris
 This repository provides an unofficial Solaris build of Codex.
 
-<img width="692" height="761" alt="image" src="https://github.com/user-attachments/assets/e55fbd58-ccba-4595-a0cc-e634c671ebdf" />
+This is an experimental build. Correct operation is not guaranteed.
+* [codex-tui.gz](https://github.com/satokaz/Unofficial-Codex-build-for-Solaris/releases/download/untagged-daed0e71a2e35efbd918/codex-tui.gz)
+  * codex-tui:      ELF 64-bit LSB executable AMD64 Version 1, dynamically linked, stripped, no debugging information available
 
+
+<img width="692" height="761" alt="image" src="https://github.com/user-attachments/assets/e55fbd58-ccba-4595-a0cc-e634c671ebdf" />
 
 `scripts/bootstrap-solaris.sh` は Oracle Solaris 11.4 環境で [openai/codex](https://github.com/openai/codex) をビルドするために必要な依存関係を local vendoring し、Solaris 向けの差分パッチを適用するユーティリティです。
 
