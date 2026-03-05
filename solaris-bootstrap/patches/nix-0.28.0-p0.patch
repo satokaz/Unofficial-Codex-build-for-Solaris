@@ -1,0 +1,30 @@
+diff -ruN '--exclude=.cargo-ok' nix-0.28.0.orig/src/sys/termios.rs nix-0.28.0/src/sys/termios.rs
+--- nix-0.28.0.orig/src/sys/termios.rs	2006-07-24 10:21:28.000000000 +0900
++++ nix-0.28.0/src/sys/termios.rs	2026-03-03 21:20:28.270353382 +0900
+@@ -418,7 +418,13 @@
+         VEOL,
+         VEOL2,
+         VERASE,
+-        #[cfg(any(freebsdlike, solarish))]
++        // Solaris doesn't actually provide `VERASE2`; the `solarish`
++        // configuration in upstream nix enables this variant unconditionally.
++        // On a real Solaris system this results in a build failure because
++        // libc doesn't export the constant.  Restrict the cfg to
++        // freebsdlike platforms only, mirroring the patch applied by the
++        // nix maintainers in later releases.
++        #[cfg(any(freebsdlike))]
+         VERASE2,
+         VINTR,
+         VKILL,
+@@ -431,7 +437,10 @@
+         #[cfg(not(target_os = "haiku"))]
+         VREPRINT,
+         VSTART,
+-        #[cfg(any(bsd, solarish))]
++        // `VSTATUS` is not defined in Solaris headers; the `solarish`
++        // feature incorrectly enabled it.  only include the BSD variants
++        // which actually exist upstream.
++        #[cfg(any(bsd))]
+         VSTATUS,
+         VSTOP,
+         VSUSP,

@@ -1,0 +1,37 @@
+diff -ruN '--exclude=.cargo-ok' fs4-0.13.1.orig/src/unix.rs fs4-0.13.1/src/unix.rs
+--- fs4-0.13.1.orig/src/unix.rs	2006-07-24 10:21:28.000000000 +0900
++++ fs4-0.13.1/src/unix.rs	2026-03-01 14:07:27.286024150 +0900
+@@ -29,7 +29,15 @@
+         fn flock(file: &$file, flag: rustix::fs::FlockOperation) -> std::io::Result<()> {
+             let borrowed_fd = unsafe { rustix::fd::BorrowedFd::borrow_raw(file.as_raw_fd()) };
+ 
+-            match rustix::fs::flock(borrowed_fd, flag) {
++            // Solaris doesn't provide ``rustix::fs::flock``; fall back to
++            // ``fcntl_lock`` which uses the same ``FlockOperation`` values.
++            #[cfg(not(target_os = "solaris"))]
++            let result = rustix::fs::flock(borrowed_fd, flag);
++
++            #[cfg(target_os = "solaris")]
++            let result = rustix::fs::fcntl_lock(borrowed_fd, flag);
++
++            match result {
+                 Ok(_) => Ok(()),
+                 Err(e) => Err(std::io::Error::from_raw_os_error(e.raw_os_error())),
+             }
+@@ -39,7 +47,15 @@
+         fn try_flock(file: &$file, flag: rustix::fs::FlockOperation) -> std::io::Result<bool> {
+             let borrowed_fd = unsafe { rustix::fd::BorrowedFd::borrow_raw(file.as_raw_fd()) };
+ 
+-            match rustix::fs::flock(borrowed_fd, flag) {
++            // Solaris doesn't provide ``rustix::fs::flock``; fall back to
++            // ``fcntl_lock`` which uses the same ``FlockOperation`` values.
++            #[cfg(not(target_os = "solaris"))]
++            let result = rustix::fs::flock(borrowed_fd, flag);
++
++            #[cfg(target_os = "solaris")]
++            let result = rustix::fs::fcntl_lock(borrowed_fd, flag);
++
++            match result {
+                 Ok(_) => Ok(true),
+                 Err(e) => {
+                     let err = std::io::Error::from_raw_os_error(e.raw_os_error());

@@ -1,0 +1,23 @@
+diff -ruN '--exclude=.cargo-ok' daemonize-0.5.0.orig/src/lib.rs daemonize-0.5.0/src/lib.rs
+--- daemonize-0.5.0.orig/src/lib.rs	2006-07-24 10:21:28.000000000 +0900
++++ daemonize-0.5.0/src/lib.rs	2026-03-01 14:09:18.081179324 +0900
+@@ -528,10 +528,19 @@
+         ErrorKind::OpenPidfile,
+     )?;
+ 
++    // Solaris doesn't expose ``libc::flock`` as a function; the symbol
++    // is a struct.  The crate hasn't been updated for that platform, so just
++    // skip the lock there.  We could emulate it with ``fcntl`` if we cared
++    // about correctness, but for now avoiding the call lets the build
++    // succeed.
++    #[cfg(not(target_os = "solaris"))]
+     check_err(
+         libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB),
+         ErrorKind::LockPidfile,
+     )?;
++    #[cfg(target_os = "solaris")]
++    let _ = ();  // no-op on Solaris
++
+     Ok(fd)
+ }
+ 

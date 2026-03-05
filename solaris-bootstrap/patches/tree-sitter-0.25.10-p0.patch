@@ -1,0 +1,51 @@
+diff -ruN '--exclude=.cargo-ok' tree-sitter-0.25.10.orig/src/portable/endian.h tree-sitter-0.25.10/src/portable/endian.h
+--- tree-sitter-0.25.10.orig/src/portable/endian.h	2006-07-24 10:21:28.000000000 +0900
++++ tree-sitter-0.25.10/src/portable/endian.h	2026-03-03 21:44:59.596043084 +0900
+@@ -187,6 +187,47 @@
+ 
+ #    endif
+ 
++#elif defined(__sun__) || defined(__SVR4__)
++// Solaris/Illumos.  tree-sitter's vendored endian.h did not recognise
++// this platform, which triggered the `#error platform not supported`
++// message during the build.  The system headers on Solaris provide
++// `<sys/byteorder.h>` but we can avoid pulling that in by simply using
++// the compiler-provided byte-order macros and builtin byte‑swap
++// functions.  This mirrors what the upstream library does for other
++// unrecognised POSIX systems (see fallback cases above).
++
++#    if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
++        #define htobe16(x) __builtin_bswap16(x)
++        #define htole16(x) (x)
++        #define be16toh(x) __builtin_bswap16(x)
++        #define le16toh(x) (x)
++
++        #define htobe32(x) __builtin_bswap32(x)
++        #define htole32(x) (x)
++        #define be32toh(x) __builtin_bswap32(x)
++        #define le32toh(x) (x)
++
++        #define htobe64(x) __builtin_bswap64(x)
++        #define htole64(x) (x)
++        #define be64toh(x) __builtin_bswap64(x)
++        #define le64toh(x) (x)
++    #else
++        #define htobe16(x) (x)
++        #define htole16(x) __builtin_bswap16(x)
++        #define be16toh(x) (x)
++        #define le16toh(x) __builtin_bswap16(x)
++
++        #define htobe32(x) (x)
++        #define htole32(x) __builtin_bswap32(x)
++        #define be32toh(x) (x)
++        #define le32toh(x) __builtin_bswap32(x)
++
++        #define htobe64(x) (x)
++        #define htole64(x) __builtin_bswap64(x)
++        #define be64toh(x) (x)
++        #define le64toh(x) __builtin_bswap64(x)
++    #endif
++
+ #elif defined(__QNXNTO__)
+ 
+ #    include <gulliver.h>

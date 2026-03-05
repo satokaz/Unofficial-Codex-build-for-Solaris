@@ -1,0 +1,35 @@
+diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
+index 193c2023f..f463a55a5 100644
+--- a/codex-rs/Cargo.toml
++++ b/codex-rs/Cargo.toml
+@@ -165,7 +165,7 @@ clap = "4"
+ clap_complete = "4"
+ color-eyre = "0.6.3"
+ crossbeam-channel = "0.5.15"
+-crossterm = "0.28.1"
++crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream", "libc", "use-dev-tty"] }
+ csv = "1.3.1"
+ ctor = "0.6.3"
+ derive_more = "2"
+diff --git a/codex-rs/third_party/crossterm/src/event/source/unix/tty.rs b/codex-rs/third_party/crossterm/src/event/source/unix/tty.rs
+index 983ed73..3d8acd5 100644
+--- a/codex-rs/third_party/crossterm/src/event/source/unix/tty.rs
++++ b/codex-rs/third_party/crossterm/src/event/source/unix/tty.rs
+@@ -93,6 +93,17 @@ impl UnixInternalEventSource {
+     }
+ 
+     pub(crate) fn from_file_descriptor(input_fd: FileDesc<'static>) -> io::Result<Self> {
++        // On Solaris the tty descriptor may not be opened with O_NONBLOCK, which
++        // would cause read() to hang forever. Force non-blocking mode so we can
++        // detect WouldBlock and continue polling.
++        #[cfg(feature = "libc")]
++        unsafe {
++            let fd = input_fd.raw_fd();
++            let flags = libc::fcntl(fd, libc::F_GETFL);
++            if flags >= 0 {
++                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
++            }
++        }
+         Ok(UnixInternalEventSource {
+             parser: Parser::default(),
+             tty_buffer: [0u8; TTY_BUFFER_SIZE],

@@ -1,0 +1,1938 @@
+diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
+index 01836cde0..193c2023f 100644
+--- a/codex-rs/Cargo.toml
++++ b/codex-rs/Cargo.toml
+@@ -371,6 +371,11 @@ opt-level = 0
+ # ratatui = { path = "../../ratatui" }
+ crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
+ ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
+ tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "132f5b39c862e3a970f731d709608b3e6276d5f6" }
+ tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "9200079d3b54a1ff51072e24d81fd354f085156f" }
++
++# Solaris-specific stub for `wayland-backend`; override the real
++# crate (which is Linux/BSD-only) with a minimal path dependency so that
++# the workspace can build on SunOS.  See docs/solaris_build.md.
++wayland-backend = { path = "third_party/wayland-backend-solaris" }
+
+ # Uncomment to debug local changes.
+ # rmcp = { path = "../../rust-sdk/crates/rmcp" }
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/lib.rs b/codex-rs/third_party/wayland-backend-solaris/src/lib.rs
+new file mode 100644
+index 000000000..246ca8545
+--- /dev/null
++++ b/codex-rs/third_party/wayland-backend-solaris/src/lib.rs
+@@ -0,0 +1,20 @@
++// Stub replacement for `wayland-backend` on Solaris.  The real crate
++// contains a bunch of Unix-specific polling/FD logic that doesn't build
++// on SunOS.  Codex itself doesn't actually use any of the implementation
++// so an empty shell satisfies the dependency graph.
++
++// Reproduce the public module structure of the real crate so dependent
++// crates compile without changes.
++pub mod client {}
++pub mod server {}
++
++// export a dummy type that some consumers may mention in bounds.
++#[derive(Debug)]
++pub struct Backend;
++
++impl Backend {
++    /// Mimic the real constructor signature, but always succeed.
++    pub fn new() -> Result<Self, ()> {
++        Ok(Backend)
++    }
++}
+diff --git a/codex-rs/third_party/wayland-backend-solaris/Cargo.toml b/codex-rs/third_party/wayland-backend-solaris/Cargo.toml
+new file mode 100644
+index 000000000..ddd394679
+--- /dev/null
++++ b/codex-rs/third_party/wayland-backend-solaris/Cargo.toml
+@@ -0,0 +1,11 @@
++[package]
++name = "wayland-backend"
++version = "0.3.12"
++edition = "2021"
++
++[lib]
++name = "wayland_backend"
++path = "src/lib.rs"
++
++[dependencies]
++# stub crate; no deps
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs b/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs
+new file mode 100644
+index 000000000..d030c4a4f
+--- /dev/null
++++ b/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs
+@@ -0,0 +1,74 @@
++use std::{
++    any::Any,
++    fmt,
++    os::unix::{
++        io::{BorrowedFd, OwnedFd, RawFd},
++        net::UnixStream,
++    },
++    sync::Arc,
++};
++
++#[cfg(doc)]
++use std::io::ErrorKind::WouldBlock;
++
++use crate::protocol::{Interface, Message, ObjectInfo};
++
++pub use crate::types::client::{InvalidId, NoWaylandLib, WaylandError};
++
++/// A trait representing your data associated to an object
++///
++/// You will only be given access to it as a `&` reference, so you
++/// need to handle interior mutability by yourself.
++///
++/// The methods of this trait will be invoked internally every time a
++/// new object is created to initialize its data.
++pub trait ObjectData: downcast_rs::DowncastSync {
++    /// Dispatch an event for the associated object
++    fn event(
++        self: Arc<Self>,
++        backend: &Backend,
++        msg: Message<ObjectId, OwnedFd>,
++    ) -> Option<Arc<dyn ObjectData>>;
++
++    /// Notification that the object has been destroyed and is no longer active
++    fn destroyed(&self, object_id: ObjectId);
++
++    /// Helper for forwarding a Debug implementation of your `ObjectData` type
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn debug(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("ObjectData").finish_non_exhaustive()
++    }
++
++    /// Helper for accessing user data
++    fn data_as_any(&self) -> &dyn Any {
++        self.as_any()
++    }
++}
++
++impl std::fmt::Debug for dyn ObjectData {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        self.debug(f)
++    }
++}
++
++downcast_rs::impl_downcast!(sync ObjectData);
++
++// minimal stubs for the types re‑exported by wayland-client
++
++#[derive(Clone, PartialEq, Eq, Hash, Debug)]
++pub struct ObjectId;
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct Backend;
++
++impl Backend {
++    /// mimic the simple constructor previously in the root stub
++    pub fn new() -> Result<Self, ()> { Ok(Backend) }
++}
++
++#[derive(Clone, Debug)]
++pub struct WeakBackend;
++
++#[derive(Debug)]
++pub struct ReadEventsGuard;
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/types/client.rs b/codex-rs/third_party/wayland-backend-solaris/src/types/client.rs
+new file mode 100644
+index 000000000..317691a1a
+--- /dev/null
++++ b/codex-rs/third_party/wayland-backend-solaris/src/types/client.rs
+@@ -0,0 +1,84 @@
++/// An error type representing the failure to load libwayland
++#[derive(Debug)]
++pub struct NoWaylandLib;
++
++impl std::error::Error for NoWaylandLib {}
++
++impl std::fmt::Display for NoWaylandLib {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
++        f.write_str("could not load libwayland-client.so")
++    }
++}
++
++/// An error that can occur when using a Wayland connection
++#[derive(Debug)]
++pub enum WaylandError {
++    /// The connection encountered an IO error
++    Io(std::io::Error),
++    /// The connection encountered a protocol error
++    Protocol(crate::protocol::ProtocolError),
++}
++
++impl std::error::Error for WaylandError {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn cause(&self) -> Option<&dyn std::error::Error> {
++        match self {
++            Self::Io(e) => Some(e),
++            Self::Protocol(e) => Some(e),
++        }
++    }
++}
++
++impl std::fmt::Display for WaylandError {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
++        match self {
++            Self::Io(e) => write!(f, "Io error: {e}"),
++            Self::Protocol(e) => std::fmt::Display::fmt(e, f),
++        }
++    }
++}
++
++impl Clone for WaylandError {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn clone(&self) -> Self {
++        match self {
++            Self::Protocol(e) => Self::Protocol(e.clone()),
++            Self::Io(e) => {
++                if let Some(code) = e.raw_os_error() {
++                    Self::Io(std::io::Error::from_raw_os_error(code))
++                } else {
++                    Self::Io(std::io::Error::new(e.kind(), ""))
++                }
++            }
++        }
++    }
++}
++
++impl From<crate::protocol::ProtocolError> for WaylandError {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn from(err: crate::protocol::ProtocolError) -> Self {
++        Self::Protocol(err)
++    }
++}
++
++impl From<std::io::Error> for WaylandError {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn from(err: std::io::Error) -> Self {
++        Self::Io(err)
++    }
++}
++
++/// An error generated when trying to act on an invalid `ObjectId`.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct InvalidId;
++
++impl std::error::Error for InvalidId {}
++
++impl std::fmt::Display for InvalidId {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
++        write!(f, "Invalid ObjectId")
++    }
++}
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/types/mod.rs b/codex-rs/third_party/wayland-backend-solaris/src/types/mod.rs
+new file mode 100644
+index 000000000..b9babe5bc
+--- /dev/null
++++ b/codex-rs/third_party/wayland-backend-solaris/src/types/mod.rs
+@@ -0,0 +1 @@
++pub mod client;
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs b/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs
+new file mode 100644
+index 000000000..c010a52d8
+--- /dev/null
++++ b/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs
+@@ -0,0 +1,358 @@
++//! Types and utilities for manipulating the Wayland protocol
++
++use std::{ffi::CString, os::unix::io::AsRawFd};
++
++pub use wayland_sys::common::{wl_argument, wl_interface, wl_message};
++
++/// Describes whether an argument may have a null value.
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum AllowNull {
++    /// Null values are allowed.
++    Yes,
++    /// Null values are forbidden.
++    No,
++}
++
++/// Enum of possible argument types as recognized by the wire
++#[derive(Copy, Clone, PartialEq, Eq, Debug)]
++pub enum ArgumentType {
++    /// An integer argument. Represented by a [`i32`].
++    Int,
++    /// An unsigned integer argument. Represented by a [`u32`].
++    Uint,
++    /// A signed fixed point number with 1/256 precision
++    Fixed,
++    /// A string. This is represented as a [`CString`] in a message.
++    Str(AllowNull),
++    /// Id of a wayland object
++    Object(AllowNull),
++    /// Id of a newly created wayland object
++    NewId,
++    /// `Vec<u8>`
++    Array,
++    /// A file descriptor argument. Represented by a [`RawFd`].
++    ///
++    /// [`RawFd`]: std::os::fd::RawFd
++    Fd,
++}
++
++impl ArgumentType {
++    /// Returns true if the type of the argument is the same.
++    pub fn same_type(self, other: Self) -> bool {
++        std::mem::discriminant(&self) == std::mem::discriminant(&other)
++    }
++}
++
++/// Enum of possible argument of the protocol
++#[derive(Debug, Clone)]
++#[allow(clippy::box_collection)]
++pub enum Argument<Id, Fd> {
++    /// An integer argument. Represented by a [`i32`].
++    Int(i32),
++    /// An unsigned integer argument. Represented by a [`u32`].
++    Uint(u32),
++    /// A signed fixed point number with 1/256 precision
++    Fixed(i32),
++    /// CString
++    ///
++    /// The value is boxed to reduce the stack size of Argument. The performance
++    /// impact is negligible as `string` arguments are pretty rare in the protocol.
++    Str(Option<Box<CString>>),
++    /// Id of a wayland object
++    Object(Id),
++    /// Id of a newly created wayland object
++    NewId(Id),
++    /// `Vec<u8>`
++    ///
++    /// The value is boxed to reduce the stack size of Argument. The performance
++    /// impact is negligible as `array` arguments are pretty rare in the protocol.
++    Array(Box<Vec<u8>>),
++    /// A file descriptor argument. Represented by a [`RawFd`].
++    ///
++    /// [`RawFd`]: std::os::fd::RawFd
++    Fd(Fd),
++}
++
++impl<Id, Fd> Argument<Id, Fd> {
++    /// Retrieve the type of a given argument instance
++    pub fn get_type(&self) -> ArgumentType {
++        match *self {
++            Self::Int(_) => ArgumentType::Int,
++            Self::Uint(_) => ArgumentType::Uint,
++            Self::Fixed(_) => ArgumentType::Fixed,
++            Self::Str(_) => ArgumentType::Str(AllowNull::Yes),
++            Self::Object(_) => ArgumentType::Object(AllowNull::Yes),
++            Self::NewId(_) => ArgumentType::NewId,
++            Self::Array(_) => ArgumentType::Array,
++            Self::Fd(_) => ArgumentType::Fd,
++        }
++    }
++
++    fn map_fd<T>(self, f: &mut impl FnMut(Fd) -> T) -> Argument<Id, T> {
++        match self {
++            Self::Int(val) => Argument::Int(val),
++            Self::Uint(val) => Argument::Uint(val),
++            Self::Fixed(val) => Argument::Fixed(val),
++            Self::Str(val) => Argument::Str(val),
++            Self::Object(val) => Argument::Object(val),
++            Self::NewId(val) => Argument::NewId(val),
++            Self::Array(val) => Argument::Array(val),
++            Self::Fd(val) => Argument::Fd(f(val)),
++        }
++    }
++}
++
++impl<Id: PartialEq, Fd: AsRawFd> PartialEq for Argument<Id, Fd> {
++    fn eq(&self, other: &Self) -> bool {
++        match (self, other) {
++            (Self::Int(a), Self::Int(b)) => a == b,
++            (Self::Uint(a), Self::Uint(b)) => a == b,
++            (Self::Fixed(a), Self::Fixed(b)) => a == b,
++            (Self::Str(a), Self::Str(b)) => a == b,
++            (Self::Object(a), Self::Object(b)) => a == b,
++            (Self::NewId(a), Self::NewId(b)) => a == b,
++            (Self::Array(a), Self::Array(b)) => a == b,
++            (Self::Fd(a), Self::Fd(b)) => a.as_raw_fd() == b.as_raw_fd(),
++            _ => false,
++        }
++    }
++}
++
++impl<Id: Eq, Fd: AsRawFd> Eq for Argument<Id, Fd> {}
++
++impl<Id: std::fmt::Display, Fd: AsRawFd> std::fmt::Display for Argument<Id, Fd> {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::Int(value) => write!(f, "{value}"),
++            Self::Uint(value) => write!(f, "{value}"),
++            Self::Fixed(value) => write!(f, "{:.4}", *value as f64 / 256.0),
++            Self::Str(value) => write!(f, "{value:?}"),
++            Self::Object(value) => write!(f, "{value}"),
++            Self::NewId(value) => write!(f, "{value}"),
++            Self::Array(value) => write!(f, "{value:?}"),
++            Self::Fd(value) => write!(f, "{}", value.as_raw_fd()),
++        }
++    }
++}
++
++/// Description of wayland interface.
++///
++/// An interface describes the possible requests and events that a wayland client and compositor use to
++/// communicate.
++#[derive(Debug)]
++pub struct Interface {
++    /// The name of the interface.
++    pub name: &'static str,
++    /// The maximum supported version of the interface.
++    pub version: u32,
++    /// A list that describes every request this interface supports.
++    pub requests: &'static [MessageDesc],
++    /// A list that describes every event this interface supports.
++    pub events: &'static [MessageDesc],
++    /// A C representation of this interface that may be used to interoperate with libwayland.
++    pub c_ptr: Option<&'static wayland_sys::common::wl_interface>,
++}
++
++impl std::fmt::Display for Interface {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str(self.name)
++    }
++}
++
++/// Wire metadata of a given message
++#[derive(Copy, Clone, Debug)]
++pub struct MessageDesc {
++    /// Name of this message
++    pub name: &'static str,
++    /// Signature of the message
++    pub signature: &'static [ArgumentType],
++    /// Minimum required version of the interface
++    pub since: u32,
++    /// Whether this message is a destructor
++    pub is_destructor: bool,
++    /// The child interface created from this message.
++    ///
++    /// In the wayland xml format, this corresponds to the `new_id` type.
++    pub child_interface: Option<&'static Interface>,
++    /// The interfaces passed into this message as arguments.
++    pub arg_interfaces: &'static [&'static Interface],
++}
++
++/// Special interface representing an anonymous object
++pub static ANONYMOUS_INTERFACE: Interface =
++    Interface { name: "<anonymous>", version: 0, requests: &[], events: &[], c_ptr: None };
++
++/// Description of the protocol-level information of an object
++#[derive(Copy, Clone, Debug)]
++pub struct ObjectInfo {
++    /// The protocol ID
++    pub id: u32,
++    /// The interface
++    pub interface: &'static Interface,
++    /// The version
++    pub version: u32,
++}
++
++/// A protocol error
++///
++/// This kind of error is generated by the server if your client didn't respect
++/// the protocol, after which the server will kill your connection.
++#[derive(Clone, Debug)]
++pub struct ProtocolError {
++    /// The error code associated with the error
++    ///
++    /// It should be interpreted as an instance of the `Error` enum of the
++    /// associated interface.
++    pub code: u32,
++    /// The id of the object that caused the error
++    pub object_id: u32,
++    /// The interface of the object that caused the error
++    pub object_interface: String,
++    /// The message sent by the server describing the error
++    pub message: String,
++}
++
++/// Number of arguments that are stocked inline in a `Message` before allocating
++///
++/// This is a ad-hoc number trying to reach a good balance between avoiding too many allocations
++/// and keeping the stack size of `Message` small.
++// Note: Keep in sync with `wayland_scanner::common::gen_write_body`.
++pub const INLINE_ARGS: usize = 4;
++
++/// Represents a message that has been sent from some object.
++#[derive(Clone, Debug)]
++pub struct Message<Id, Fd> {
++    /// The id of the object that sent the message.
++    pub sender_id: Id,
++    /// The opcode of the message.
++    pub opcode: u16,
++    /// The arguments of the message.
++    pub args: smallvec::SmallVec<[Argument<Id, Fd>; INLINE_ARGS]>,
++}
++
++impl<Id, Fd> Message<Id, Fd> {
++    /// Map some closure on all Fd contained in this message, to change the Fd generic parameter.
++    pub fn map_fd<T>(self, mut f: impl FnMut(Fd) -> T) -> Message<Id, T> {
++        Message {
++            sender_id: self.sender_id,
++            opcode: self.opcode,
++            args: self.args.into_iter().map(move |arg| arg.map_fd(&mut f)).collect(),
++        }
++    }
++}
++
++impl<Id: PartialEq, Fd: AsRawFd> PartialEq for Message<Id, Fd> {
++    fn eq(&self, other: &Self) -> bool {
++        self.sender_id == other.sender_id && self.opcode == other.opcode && self.args == other.args
++    }
++}
++
++impl<Id: Eq, Fd: AsRawFd> Eq for Message<Id, Fd> {}
++
++impl std::error::Error for ProtocolError {}
++
++impl std::fmt::Display for ProtocolError {
++    #[cfg_attr(unstable_coverage, coverage(off))]
++    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
++        write!(
++            f,
++            "Protocol error {} on object {}@{}: {}",
++            self.code, self.object_interface, self.object_id, self.message
++        )
++    }
++}
++
++/// Returns true if the two interfaces are the same.
++#[inline]
++pub fn same_interface(a: &'static Interface, b: &'static Interface) -> bool {
++    std::ptr::eq(a, b) || a.name == b.name
++}
++
++pub(crate) fn check_for_signature<Id, Fd>(
++    signature: &[ArgumentType],
++    args: &[Argument<Id, Fd>],
++) -> bool {
++    if signature.len() != args.len() {
++        return false;
++    }
++    for (typ, arg) in signature.iter().copied().zip(args.iter()) {
++        if !arg.get_type().same_type(typ) {
++            return false;
++        }
++    }
++    true
++}
++
++#[inline]
++#[allow(dead_code)]
++pub(crate) fn same_interface_or_anonymous(a: &'static Interface, b: &'static Interface) -> bool {
++    same_interface(a, b) || same_interface(a, &ANONYMOUS_INTERFACE)
++}
++
++/// An enum value in the protocol.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum WEnum<T> {
++    /// The interpreted value
++    Value(T),
++    /// The stored value does not match one defined by the protocol file
++    Unknown(u32),
++}
++
++/// Error representing an unknown numeric variant for a [`WEnum`]
++#[derive(Debug, Copy, Clone)]
++pub struct WEnumError {
++    typ: &'static str,
++    value: u32,
++}
++
++impl std::error::Error for WEnumError {}
++
++impl std::fmt::Display for WEnumError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "Unknown numeric value {} for enum {}", self.value, self.typ)
++    }
++}
++
++impl<T> WEnum<T> {
++    /// Convert this [`WEnum`] into a result
++    ///
++    /// This can be used to take advantage of the numerous helper methods on [`Result`] if you
++    /// don't plan to handle the unknown case of this enum.
++    ///
++    /// You can also use the [`From`] and [`Into`] traits to perform the same conversion.
++    #[inline]
++    pub fn into_result(self) -> Result<T, WEnumError> {
++        match self {
++            Self::Value(v) => Ok(v),
++            Self::Unknown(value) => Err(WEnumError { typ: std::any::type_name::<T>(), value }),
++        }
++    }
++}
++
++impl<T> From<WEnum<T>> for Result<T, WEnumError> {
++    fn from(me: WEnum<T>) -> Self {
++        me.into_result()
++    }
++}
++
++impl<T: TryFrom<u32>> From<u32> for WEnum<T> {
++    /// Constructs an enum from the integer format used by the wayland protocol.
++    fn from(v: u32) -> Self {
++        match T::try_from(v) {
++            Ok(t) => Self::Value(t),
++            Err(_) => Self::Unknown(v),
++        }
++    }
++}
++
++impl<T: Into<u32>> From<WEnum<T>> for u32 {
++    /// Converts an enum into a numerical form used by the wayland protocol.
++    fn from(enu: WEnum<T>) -> u32 {
++        match enu {
++            WEnum::Unknown(u) => u,
++            WEnum::Value(t) => t.into(),
++        }
++    }
++}
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/lib.rs b/codex-rs/third_party/wayland-backend-solaris/src/lib.rs
+index 246ca8545..a41229476 100644
+--- a/codex-rs/third_party/wayland-backend-solaris/src/lib.rs
++++ b/codex-rs/third_party/wayland-backend-solaris/src/lib.rs
+@@ -3,18 +3,26 @@
+ // on SunOS.  Codex itself doesn't actually use any of the implementation
+ // so an empty shell satisfies the dependency graph.
+ 
+-// Reproduce the public module structure of the real crate so dependent
+-// crates compile without changes.
+-pub mod client {}
+-pub mod server {}
++// re-export smallvec like the real crate does; some downstream crates expect it
++pub extern crate smallvec;
+ 
+-// export a dummy type that some consumers may mention in bounds.
+-#[derive(Debug)]
+-pub struct Backend;
++// protocol definitions are simple data types that wayland-client needs
++pub mod protocol;
+ 
+-impl Backend {
+-    /// Mimic the real constructor signature, but always succeed.
+-    pub fn new() -> Result<Self, ()> {
+-        Ok(Backend)
+-    }
++// types submodule holds a few error types used by the client API
++pub mod types;
++
++// bring in the vendored client_api module we created earlier
++mod client_api;
++
++// expose the same public modules that the real crate provides
++pub mod client {
++    pub use crate::client_api::*;
+ }
++
++pub mod server {
++    pub use crate::client_api::*;
++}
++
++// some callers refer to ::Backend directly
++pub use client::Backend;
+diff --git a/codex-rs/third_party/wayland-backend-solaris/Cargo.toml b/codex-rs/third_party/wayland-backend-solaris/Cargo.toml
+index ddd394679..87cd58f92 100644
+--- a/codex-rs/third_party/wayland-backend-solaris/Cargo.toml
++++ b/codex-rs/third_party/wayland-backend-solaris/Cargo.toml
+@@ -8,4 +8,7 @@ name = "wayland_backend"
+ path = "src/lib.rs"
+ 
+ [dependencies]
+-# stub crate; no deps
++# pull in the same smallvec version the real crate uses; it is part of
++# the public API (re-exported by wayland-client), so we need it to avoid
++# missing-crate errors.
++smallvec = { version = "1.9", features = ["union", "const_generics", "const_new"] }
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs b/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs
+index c010a52d8..9008ce79b 100644
+--- a/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs
++++ b/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs
+@@ -1,358 +1,28 @@
+-//! Types and utilities for manipulating the Wayland protocol
+-
+-use std::{ffi::CString, os::unix::io::AsRawFd};
+-
+-pub use wayland_sys::common::{wl_argument, wl_interface, wl_message};
+-
+-/// Describes whether an argument may have a null value.
+-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+-pub enum AllowNull {
+-    /// Null values are allowed.
+-    Yes,
+-    /// Null values are forbidden.
+-    No,
+-}
+-
+-/// Enum of possible argument types as recognized by the wire
+-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+-pub enum ArgumentType {
+-    /// An integer argument. Represented by a [`i32`].
+-    Int,
+-    /// An unsigned integer argument. Represented by a [`u32`].
+-    Uint,
+-    /// A signed fixed point number with 1/256 precision
+-    Fixed,
+-    /// A string. This is represented as a [`CString`] in a message.
+-    Str(AllowNull),
+-    /// Id of a wayland object
+-    Object(AllowNull),
+-    /// Id of a newly created wayland object
+-    NewId,
+-    /// `Vec<u8>`
+-    Array,
+-    /// A file descriptor argument. Represented by a [`RawFd`].
+-    ///
+-    /// [`RawFd`]: std::os::fd::RawFd
+-    Fd,
+-}
+-
+-impl ArgumentType {
+-    /// Returns true if the type of the argument is the same.
+-    pub fn same_type(self, other: Self) -> bool {
+-        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+-    }
+-}
+-
+-/// Enum of possible argument of the protocol
++//! Minimal stub of the `protocol` module.  The real crate defines a
++//! sizeable amount of machinery for encoding/decoding Wayland messages,
++//! but Codex never exercises any of that logic.  We only need to provide
++//! the types that `wayland-client` imports and reexports.
++
++/// Description of a protocol interface.  The real type has a number of
++/// fields, but downstream code only ever makes this an opaque handle.
++#[derive(Debug, Clone, Copy)]
++pub struct Interface;
++
++/// A (sender, opcode, arguments) tuple.  The concrete fields are never
++/// inspected by Codex.
+ #[derive(Debug, Clone)]
+-#[allow(clippy::box_collection)]
+-pub enum Argument<Id, Fd> {
+-    /// An integer argument. Represented by a [`i32`].
+-    Int(i32),
+-    /// An unsigned integer argument. Represented by a [`u32`].
+-    Uint(u32),
+-    /// A signed fixed point number with 1/256 precision
+-    Fixed(i32),
+-    /// CString
+-    ///
+-    /// The value is boxed to reduce the stack size of Argument. The performance
+-    /// impact is negligible as `string` arguments are pretty rare in the protocol.
+-    Str(Option<Box<CString>>),
+-    /// Id of a wayland object
+-    Object(Id),
+-    /// Id of a newly created wayland object
+-    NewId(Id),
+-    /// `Vec<u8>`
+-    ///
+-    /// The value is boxed to reduce the stack size of Argument. The performance
+-    /// impact is negligible as `array` arguments are pretty rare in the protocol.
+-    Array(Box<Vec<u8>>),
+-    /// A file descriptor argument. Represented by a [`RawFd`].
+-    ///
+-    /// [`RawFd`]: std::os::fd::RawFd
+-    Fd(Fd),
+-}
+-
+-impl<Id, Fd> Argument<Id, Fd> {
+-    /// Retrieve the type of a given argument instance
+-    pub fn get_type(&self) -> ArgumentType {
+-        match *self {
+-            Self::Int(_) => ArgumentType::Int,
+-            Self::Uint(_) => ArgumentType::Uint,
+-            Self::Fixed(_) => ArgumentType::Fixed,
+-            Self::Str(_) => ArgumentType::Str(AllowNull::Yes),
+-            Self::Object(_) => ArgumentType::Object(AllowNull::Yes),
+-            Self::NewId(_) => ArgumentType::NewId,
+-            Self::Array(_) => ArgumentType::Array,
+-            Self::Fd(_) => ArgumentType::Fd,
+-        }
+-    }
+-
+-    fn map_fd<T>(self, f: &mut impl FnMut(Fd) -> T) -> Argument<Id, T> {
+-        match self {
+-            Self::Int(val) => Argument::Int(val),
+-            Self::Uint(val) => Argument::Uint(val),
+-            Self::Fixed(val) => Argument::Fixed(val),
+-            Self::Str(val) => Argument::Str(val),
+-            Self::Object(val) => Argument::Object(val),
+-            Self::NewId(val) => Argument::NewId(val),
+-            Self::Array(val) => Argument::Array(val),
+-            Self::Fd(val) => Argument::Fd(f(val)),
+-        }
+-    }
+-}
+-
+-impl<Id: PartialEq, Fd: AsRawFd> PartialEq for Argument<Id, Fd> {
+-    fn eq(&self, other: &Self) -> bool {
+-        match (self, other) {
+-            (Self::Int(a), Self::Int(b)) => a == b,
+-            (Self::Uint(a), Self::Uint(b)) => a == b,
+-            (Self::Fixed(a), Self::Fixed(b)) => a == b,
+-            (Self::Str(a), Self::Str(b)) => a == b,
+-            (Self::Object(a), Self::Object(b)) => a == b,
+-            (Self::NewId(a), Self::NewId(b)) => a == b,
+-            (Self::Array(a), Self::Array(b)) => a == b,
+-            (Self::Fd(a), Self::Fd(b)) => a.as_raw_fd() == b.as_raw_fd(),
+-            _ => false,
+-        }
+-    }
+-}
+-
+-impl<Id: Eq, Fd: AsRawFd> Eq for Argument<Id, Fd> {}
+-
+-impl<Id: std::fmt::Display, Fd: AsRawFd> std::fmt::Display for Argument<Id, Fd> {
+-    #[cfg_attr(unstable_coverage, coverage(off))]
+-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        match self {
+-            Self::Int(value) => write!(f, "{value}"),
+-            Self::Uint(value) => write!(f, "{value}"),
+-            Self::Fixed(value) => write!(f, "{:.4}", *value as f64 / 256.0),
+-            Self::Str(value) => write!(f, "{value:?}"),
+-            Self::Object(value) => write!(f, "{value}"),
+-            Self::NewId(value) => write!(f, "{value}"),
+-            Self::Array(value) => write!(f, "{value:?}"),
+-            Self::Fd(value) => write!(f, "{}", value.as_raw_fd()),
+-        }
+-    }
+-}
+-
+-/// Description of wayland interface.
+-///
+-/// An interface describes the possible requests and events that a wayland client and compositor use to
+-/// communicate.
+-#[derive(Debug)]
+-pub struct Interface {
+-    /// The name of the interface.
+-    pub name: &'static str,
+-    /// The maximum supported version of the interface.
+-    pub version: u32,
+-    /// A list that describes every request this interface supports.
+-    pub requests: &'static [MessageDesc],
+-    /// A list that describes every event this interface supports.
+-    pub events: &'static [MessageDesc],
+-    /// A C representation of this interface that may be used to interoperate with libwayland.
+-    pub c_ptr: Option<&'static wayland_sys::common::wl_interface>,
+-}
+-
+-impl std::fmt::Display for Interface {
+-    #[cfg_attr(unstable_coverage, coverage(off))]
+-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        f.write_str(self.name)
+-    }
+-}
+-
+-/// Wire metadata of a given message
+-#[derive(Copy, Clone, Debug)]
+-pub struct MessageDesc {
+-    /// Name of this message
+-    pub name: &'static str,
+-    /// Signature of the message
+-    pub signature: &'static [ArgumentType],
+-    /// Minimum required version of the interface
+-    pub since: u32,
+-    /// Whether this message is a destructor
+-    pub is_destructor: bool,
+-    /// The child interface created from this message.
+-    ///
+-    /// In the wayland xml format, this corresponds to the `new_id` type.
+-    pub child_interface: Option<&'static Interface>,
+-    /// The interfaces passed into this message as arguments.
+-    pub arg_interfaces: &'static [&'static Interface],
+-}
+-
+-/// Special interface representing an anonymous object
+-pub static ANONYMOUS_INTERFACE: Interface =
+-    Interface { name: "<anonymous>", version: 0, requests: &[], events: &[], c_ptr: None };
+-
+-/// Description of the protocol-level information of an object
+-#[derive(Copy, Clone, Debug)]
+-pub struct ObjectInfo {
+-    /// The protocol ID
+-    pub id: u32,
+-    /// The interface
+-    pub interface: &'static Interface,
+-    /// The version
+-    pub version: u32,
+-}
+-
+-/// A protocol error
+-///
+-/// This kind of error is generated by the server if your client didn't respect
+-/// the protocol, after which the server will kill your connection.
+-#[derive(Clone, Debug)]
+-pub struct ProtocolError {
+-    /// The error code associated with the error
+-    ///
+-    /// It should be interpreted as an instance of the `Error` enum of the
+-    /// associated interface.
+-    pub code: u32,
+-    /// The id of the object that caused the error
+-    pub object_id: u32,
+-    /// The interface of the object that caused the error
+-    pub object_interface: String,
+-    /// The message sent by the server describing the error
+-    pub message: String,
+-}
+-
+-/// Number of arguments that are stocked inline in a `Message` before allocating
+-///
+-/// This is a ad-hoc number trying to reach a good balance between avoiding too many allocations
+-/// and keeping the stack size of `Message` small.
+-// Note: Keep in sync with `wayland_scanner::common::gen_write_body`.
+-pub const INLINE_ARGS: usize = 4;
+-
+-/// Represents a message that has been sent from some object.
+-#[derive(Clone, Debug)]
+ pub struct Message<Id, Fd> {
+-    /// The id of the object that sent the message.
+-    pub sender_id: Id,
+-    /// The opcode of the message.
+-    pub opcode: u16,
+-    /// The arguments of the message.
+-    pub args: smallvec::SmallVec<[Argument<Id, Fd>; INLINE_ARGS]>,
+-}
+-
+-impl<Id, Fd> Message<Id, Fd> {
+-    /// Map some closure on all Fd contained in this message, to change the Fd generic parameter.
+-    pub fn map_fd<T>(self, mut f: impl FnMut(Fd) -> T) -> Message<Id, T> {
+-        Message {
+-            sender_id: self.sender_id,
+-            opcode: self.opcode,
+-            args: self.args.into_iter().map(move |arg| arg.map_fd(&mut f)).collect(),
+-        }
+-    }
++    _marker: std::marker::PhantomData<(Id, Fd)>,
+ }
+ 
+-impl<Id: PartialEq, Fd: AsRawFd> PartialEq for Message<Id, Fd> {
+-    fn eq(&self, other: &Self) -> bool {
+-        self.sender_id == other.sender_id && self.opcode == other.opcode && self.args == other.args
+-    }
+-}
+-
+-impl<Id: Eq, Fd: AsRawFd> Eq for Message<Id, Fd> {}
+-
+-impl std::error::Error for ProtocolError {}
+-
+-impl std::fmt::Display for ProtocolError {
+-    #[cfg_attr(unstable_coverage, coverage(off))]
+-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
+-        write!(
+-            f,
+-            "Protocol error {} on object {}@{}: {}",
+-            self.code, self.object_interface, self.object_id, self.message
+-        )
+-    }
+-}
+-
+-/// Returns true if the two interfaces are the same.
+-#[inline]
+-pub fn same_interface(a: &'static Interface, b: &'static Interface) -> bool {
+-    std::ptr::eq(a, b) || a.name == b.name
+-}
+-
+-pub(crate) fn check_for_signature<Id, Fd>(
+-    signature: &[ArgumentType],
+-    args: &[Argument<Id, Fd>],
+-) -> bool {
+-    if signature.len() != args.len() {
+-        return false;
+-    }
+-    for (typ, arg) in signature.iter().copied().zip(args.iter()) {
+-        if !arg.get_type().same_type(typ) {
+-            return false;
+-        }
+-    }
+-    true
+-}
+-
+-#[inline]
+-#[allow(dead_code)]
+-pub(crate) fn same_interface_or_anonymous(a: &'static Interface, b: &'static Interface) -> bool {
+-    same_interface(a, b) || same_interface(a, &ANONYMOUS_INTERFACE)
+-}
++/// Additional information about a Wayland object.  Never actually used.
++#[derive(Debug, Clone, Copy)]
++pub struct ObjectInfo;
+ 
+-/// An enum value in the protocol.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum WEnum<T> {
+-    /// The interpreted value
+-    Value(T),
+-    /// The stored value does not match one defined by the protocol file
+-    Unknown(u32),
+-}
+-
+-/// Error representing an unknown numeric variant for a [`WEnum`]
+-#[derive(Debug, Copy, Clone)]
+-pub struct WEnumError {
+-    typ: &'static str,
+-    value: u32,
+-}
+-
+-impl std::error::Error for WEnumError {}
+-
+-impl std::fmt::Display for WEnumError {
+-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+-        write!(f, "Unknown numeric value {} for enum {}", self.value, self.typ)
+-    }
+-}
+-
+-impl<T> WEnum<T> {
+-    /// Convert this [`WEnum`] into a result
+-    ///
+-    /// This can be used to take advantage of the numerous helper methods on [`Result`] if you
+-    /// don't plan to handle the unknown case of this enum.
+-    ///
+-    /// You can also use the [`From`] and [`Into`] traits to perform the same conversion.
+-    #[inline]
+-    pub fn into_result(self) -> Result<T, WEnumError> {
+-        match self {
+-            Self::Value(v) => Ok(v),
+-            Self::Unknown(value) => Err(WEnumError { typ: std::any::type_name::<T>(), value }),
+-        }
+-    }
+-}
+-
+-impl<T> From<WEnum<T>> for Result<T, WEnumError> {
+-    fn from(me: WEnum<T>) -> Self {
+-        me.into_result()
+-    }
+-}
+-
+-impl<T: TryFrom<u32>> From<u32> for WEnum<T> {
+-    /// Constructs an enum from the integer format used by the wayland protocol.
+-    fn from(v: u32) -> Self {
+-        match T::try_from(v) {
+-            Ok(t) => Self::Value(t),
+-            Err(_) => Self::Unknown(v),
+-        }
+-    }
+-}
++/// Error returned by protocol operations.  Never constructed.
++#[derive(Debug, Clone)]
++pub enum ProtocolError {}
+ 
+-impl<T: Into<u32>> From<WEnum<T>> for u32 {
+-    /// Converts an enum into a numerical form used by the wayland protocol.
+-    fn from(enu: WEnum<T>) -> u32 {
+-        match enu {
+-            WEnum::Unknown(u) => u,
+-            WEnum::Value(t) => t.into(),
+-        }
+-    }
+-}
++/// A tiny helper enum that some public API exposes.
++#[derive(Debug, Clone, Copy)]
++pub enum WEnum {}
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs b/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs
+index d030c4a4f..72c151c2a 100644
+--- a/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs
++++ b/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs
+@@ -1,37 +1,23 @@
+-use std::{
+-    any::Any,
+-    fmt,
+-    os::unix::{
+-        io::{BorrowedFd, OwnedFd, RawFd},
+-        net::UnixStream,
+-    },
+-    sync::Arc,
+-};
+-
+-#[cfg(doc)]
+-use std::io::ErrorKind::WouldBlock;
+-
+-use crate::protocol::{Interface, Message, ObjectInfo};
++use std::{any::Any, sync::Arc};
+ 
++// re-export some error types from the separate `types` module
+ pub use crate::types::client::{InvalidId, NoWaylandLib, WaylandError};
+ 
+-/// A trait representing your data associated to an object
++/// A trait representing your data associated to an object.
+ ///
+-/// You will only be given access to it as a `&` reference, so you
+-/// need to handle interior mutability by yourself.
+-///
+-/// The methods of this trait will be invoked internally every time a
+-/// new object is created to initialize its data.
+-pub trait ObjectData: downcast_rs::DowncastSync {
++/// This is only required so that the `wayland-client` crate can compile;
++/// it is never instantiated by Codex.  We keep the same API surface as the
++/// real crate but make every method a no-op.
++pub trait ObjectData: Send + Sync + 'static {
+     /// Dispatch an event for the associated object
+     fn event(
+         self: Arc<Self>,
+-        backend: &Backend,
+-        msg: Message<ObjectId, OwnedFd>,
++        _backend: &Backend,
++        _msg: (), // generic parameters are erased, not used
+     ) -> Option<Arc<dyn ObjectData>>;
+ 
+     /// Notification that the object has been destroyed and is no longer active
+-    fn destroyed(&self, object_id: ObjectId);
++    fn destroyed(&self, _object_id: ObjectId);
+ 
+     /// Helper for forwarding a Debug implementation of your `ObjectData` type
+     #[cfg_attr(unstable_coverage, coverage(off))]
+@@ -52,9 +38,7 @@ impl std::fmt::Debug for dyn ObjectData {
+     }
+ }
+ 
+-downcast_rs::impl_downcast!(sync ObjectData);
+-
+-// minimal stubs for the types re‑exported by wayland-client
++// stubbed types returned/exported by the real crate
+ 
+ #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct ObjectId;
+diff --git a/codex-rs/.cargo/config.toml b/codex-rs/.cargo/config.toml
+index 5d5eb8fd6..f26d42e52 100644
+--- a/codex-rs/.cargo/config.toml
++++ b/codex-rs/.cargo/config.toml
+@@ -9,3 +9,12 @@ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "link-arg=/arm64hazardfree"]
+ 
+ [target.'cfg(all(windows, target_env = "gnu"))']
+ rustflags = ["-C", "link-arg=-Wl,--stack,8388608"]
++
++
++# Solaris: Oniguruma's build script (cc-rs) needs to know that <alloca.h>
++# exists so it can declare alloca(). Set CPPFLAGS for all C compilation.
++[target.'cfg(target_os = "solaris")']
++rustflags = []
++
++[target.'cfg(target_os = "solaris")'.env]
++CPPFLAGS = "-DHAVE_ALLOCA_H=1"
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index 6e13edc7b..6577c9dea 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -959,7 +959,16 @@ version = "0.5.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0700ddab506f33b20a03b13996eccd309a48e5ff77d0d95926aa0210fb4e95f1"
+ dependencies = [
+- "bit-vec",
++ "bit-vec 0.6.3",
++]
++
++[[package]]
++name = "bit-set"
++version = "0.8.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
++dependencies = [
++ "bit-vec 0.8.0",
+ ]
+ 
+ [[package]]
+@@ -968,6 +977,12 @@ version = "0.6.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "349f9b6a179ed607305526ca489b34ad0a41aed5f7980fa90eb03160b69598fb"
+ 
++[[package]]
++name = "bit-vec"
++version = "0.8.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
++
+ [[package]]
+ name = "bitflags"
+ version = "1.3.2"
+@@ -3760,6 +3775,17 @@ dependencies = [
+  "once_cell",
+ ]
+ 
++[[package]]
++name = "fancy-regex"
++version = "0.16.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
++dependencies = [
++ "bit-set 0.8.0",
++ "regex-automata",
++ "regex-syntax 0.8.8",
++]
++
+ [[package]]
+ name = "fastrand"
+ version = "2.3.0"
+@@ -5250,7 +5276,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0a1cbf952127589f2851ab2046af368fd20645491bb4b376f04b7f94d7a9837b"
+ dependencies = [
+  "ascii-canvas",
+- "bit-set",
++ "bit-set 0.5.3",
+  "diff",
+  "ena",
+  "is-terminal",
+@@ -6265,28 +6291,6 @@ version = "1.70.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+ 
+-[[package]]
+-name = "onig"
+-version = "6.5.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "336b9c63443aceef14bea841b899035ae3abe89b7c486aaf4c5bd8aafedac3f0"
+-dependencies = [
+- "bitflags 2.10.0",
+- "libc",
+- "once_cell",
+- "onig_sys",
+-]
+-
+-[[package]]
+-name = "onig_sys"
+-version = "69.9.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c7f86c6eef3d6df15f23bcfb6af487cbd2fed4e5581d58d5bf1f5f8b7f6727dc"
+-dependencies = [
+- "cc",
+- "pkg-config",
+-]
+-
+ [[package]]
+ name = "opaque-debug"
+ version = "0.3.1"
+@@ -9230,10 +9234,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925"
+ dependencies = [
+  "bincode",
++ "fancy-regex",
+  "flate2",
+  "fnv",
+  "once_cell",
+- "onig",
+  "plist",
+  "regex-syntax 0.8.8",
+  "serde",
+@@ -10462,14 +10466,9 @@ dependencies = [
+ [[package]]
+ name = "wayland-backend"
+ version = "0.3.12"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fee64194ccd96bf648f42a65a7e589547096dfa702f7cadef84347b66ad164f9"
+ dependencies = [
+- "cc",
+  "downcast-rs",
+- "rustix 1.1.3",
+  "smallvec",
+- "wayland-sys",
+ ]
+ 
+ [[package]]
+@@ -10520,15 +10519,6 @@ dependencies = [
+  "quote",
+ ]
+ 
+-[[package]]
+-name = "wayland-sys"
+-version = "0.31.8"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1e6dbfc3ac5ef974c92a2235805cc0114033018ae1290a72e474aa8b28cbbdfd"
+-dependencies = [
+- "pkg-config",
+-]
+-
+ [[package]]
+ name = "web-sys"
+ version = "0.3.85"
+diff --git a/codex-rs/process-hardening/src/lib.rs b/codex-rs/process-hardening/src/lib.rs
+index fb6145f17..8465dd9f9 100644
+--- a/codex-rs/process-hardening/src/lib.rs
++++ b/codex-rs/process-hardening/src/lib.rs
+@@ -36,7 +36,9 @@ const PTRACE_DENY_ATTACH_FAILED_EXIT_CODE: i32 = 6;
+     target_os = "macos",
+     target_os = "freebsd",
+     target_os = "netbsd",
+-    target_os = "openbsd"
++    target_os = "openbsd",
++    target_os = "solaris",
++    target_os = "illumos",
+ ))]
+ const SET_RLIMIT_CORE_FAILED_EXIT_CODE: i32 = 7;
+ 
+diff --git a/codex-rs/third_party/wayland-backend-solaris/Cargo.toml b/codex-rs/third_party/wayland-backend-solaris/Cargo.toml
+index 87cd58f92..a0b369374 100644
+--- a/codex-rs/third_party/wayland-backend-solaris/Cargo.toml
++++ b/codex-rs/third_party/wayland-backend-solaris/Cargo.toml
+@@ -8,7 +8,9 @@ name = "wayland_backend"
+ path = "src/lib.rs"
+ 
+ [dependencies]
+-# pull in the same smallvec version the real crate uses; it is part of
+-# the public API (re-exported by wayland-client), so we need it to avoid
+-# missing-crate errors.
++# smallvec is part of the real crate's public API (re-exported as
++# `wayland_backend::smallvec`).  Use the same version + features as upstream.
+ smallvec = { version = "1.9", features = ["union", "const_generics", "const_new"] }
++
++# downcast-rs is used by the ObjectData trait (same as upstream).
++downcast-rs = "1.2"
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs b/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs
+index 72c151c2a..37ad86e85 100644
+--- a/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs
++++ b/codex-rs/third_party/wayland-backend-solaris/src/client_api.rs
+@@ -1,58 +1,192 @@
+-use std::{any::Any, sync::Arc};
++//! Stub client API for Solaris.
++//!
++//! Provides the same public types and trait signatures that `wayland-client`
++//! imports from `wayland-backend::client`, but with no-op implementations.
++
++use std::{
++    any::Any,
++    fmt,
++    os::unix::io::{BorrowedFd, OwnedFd, RawFd},
++    sync::Arc,
++};
++
++use crate::protocol::{Interface, Message, ObjectInfo};
+ 
+-// re-export some error types from the separate `types` module
+ pub use crate::types::client::{InvalidId, NoWaylandLib, WaylandError};
+ 
+-/// A trait representing your data associated to an object.
++/// A trait representing data associated to an object.
+ ///
+-/// This is only required so that the `wayland-client` crate can compile;
+-/// it is never instantiated by Codex.  We keep the same API surface as the
+-/// real crate but make every method a no-op.
+-pub trait ObjectData: Send + Sync + 'static {
+-    /// Dispatch an event for the associated object
++/// Mirrors the real `wayland-backend` trait exactly so that generated
++/// `wayland-client` code compiles without changes.
++pub trait ObjectData: downcast_rs::DowncastSync {
+     fn event(
+         self: Arc<Self>,
+-        _backend: &Backend,
+-        _msg: (), // generic parameters are erased, not used
++        backend: &Backend,
++        msg: Message<ObjectId, OwnedFd>,
+     ) -> Option<Arc<dyn ObjectData>>;
+ 
+-    /// Notification that the object has been destroyed and is no longer active
+-    fn destroyed(&self, _object_id: ObjectId);
++    fn destroyed(&self, object_id: ObjectId);
+ 
+-    /// Helper for forwarding a Debug implementation of your `ObjectData` type
+     #[cfg_attr(unstable_coverage, coverage(off))]
+-    fn debug(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++    fn debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         f.debug_struct("ObjectData").finish_non_exhaustive()
+     }
+ 
+-    /// Helper for accessing user data
+     fn data_as_any(&self) -> &dyn Any {
++        // downcast_rs provides as_any() via the DowncastSync supertrait
+         self.as_any()
+     }
+ }
+ 
+-impl std::fmt::Debug for dyn ObjectData {
++impl fmt::Debug for dyn ObjectData {
+     #[cfg_attr(unstable_coverage, coverage(off))]
+-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         self.debug(f)
+     }
+ }
+ 
+-// stubbed types returned/exported by the real crate
++downcast_rs::impl_downcast!(sync ObjectData);
++
++// ── ObjectId ─────────────────────────────────────────────────────────────────
++
++#[derive(Clone, PartialEq, Eq, Hash)]
++pub struct ObjectId {
++    id: u32,
++}
++
++impl fmt::Display for ObjectId {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "ObjectId({})", self.id)
++    }
++}
++
++impl fmt::Debug for ObjectId {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "ObjectId({})", self.id)
++    }
++}
++
++impl ObjectId {
++    #[inline]
++    pub fn is_null(&self) -> bool { self.id == 0 }
+ 
+-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+-pub struct ObjectId;
++    #[inline]
++    pub fn null() -> ObjectId { ObjectId { id: 0 } }
++
++    #[inline]
++    pub fn interface(&self) -> &'static Interface {
++        &crate::protocol::ANONYMOUS_INTERFACE
++    }
++
++    #[inline]
++    pub fn protocol_id(&self) -> u32 { self.id }
++}
++
++// ── Backend ───────────────────────────────────────────────────────────────────
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub struct Backend;
+ 
++#[derive(Clone, Debug)]
++pub struct WeakBackend;
++
++impl WeakBackend {
++    pub fn upgrade(&self) -> Option<Backend> { None }
++}
++
+ impl Backend {
+-    /// mimic the simple constructor previously in the root stub
+-    pub fn new() -> Result<Self, ()> { Ok(Backend) }
++    /// Always fails on Solaris (no Wayland compositor).
++    pub fn connect(_stream: std::os::unix::net::UnixStream) -> Result<Self, NoWaylandLib> {
++        Err(NoWaylandLib)
++    }
++
++    pub fn downgrade(&self) -> WeakBackend { WeakBackend }
++
++    pub fn flush(&self) -> Result<(), WaylandError> { Ok(()) }
++
++    pub fn poll_fd(&self) -> BorrowedFd<'_> {
++        // SAFETY: intentionally invalid; never called on Solaris.
++        unsafe { BorrowedFd::borrow_raw(-1) }
++    }
++
++    pub fn display_id(&self) -> ObjectId { ObjectId { id: 1 } }
++
++    pub fn last_error(&self) -> Option<WaylandError> { None }
++
++    pub fn info(&self, _id: ObjectId) -> Result<ObjectInfo, InvalidId> { Err(InvalidId) }
++
++    pub fn destroy_object(&self, _id: &ObjectId) -> Result<(), InvalidId> { Err(InvalidId) }
++
++    pub fn send_request(
++        &self,
++        _msg: Message<ObjectId, RawFd>,
++        _data: Option<Arc<dyn ObjectData>>,
++        _child_spec: Option<(&'static Interface, u32)>,
++    ) -> Result<ObjectId, InvalidId> {
++        Err(InvalidId)
++    }
++
++    pub fn get_data(&self, _id: ObjectId) -> Result<Arc<dyn ObjectData>, InvalidId> {
++        Err(InvalidId)
++    }
++
++    pub fn set_data(
++        &self,
++        _id: ObjectId,
++        _data: Arc<dyn ObjectData>,
++    ) -> Result<(), InvalidId> {
++        Err(InvalidId)
++    }
++
++    #[must_use]
++    pub fn prepare_read(&self) -> Option<ReadEventsGuard> { None }
++
++    pub fn dispatch_inner_queue(&self) -> Result<usize, WaylandError> { Ok(0) }
+ }
+ 
+-#[derive(Clone, Debug)]
+-pub struct WeakBackend;
++// ── ReadEventsGuard ───────────────────────────────────────────────────────────
+ 
+ #[derive(Debug)]
+ pub struct ReadEventsGuard;
++
++impl ReadEventsGuard {
++    pub fn connection_fd(&self) -> BorrowedFd<'_> {
++        unsafe { BorrowedFd::borrow_raw(-1) }
++    }
++
++    pub fn read(self) -> Result<usize, WaylandError> { Ok(0) }
++}
++
++// ── Internal stubs ────────────────────────────────────────────────────────────
++
++pub(crate) struct DumbObjectData;
++
++impl ObjectData for DumbObjectData {
++    fn event(
++        self: Arc<Self>,
++        _handle: &Backend,
++        _msg: Message<ObjectId, OwnedFd>,
++    ) -> Option<Arc<dyn ObjectData>> {
++        unreachable!()
++    }
++
++    fn destroyed(&self, _object_id: ObjectId) { unreachable!() }
++}
++
++pub(crate) struct UninitObjectData;
++
++impl ObjectData for UninitObjectData {
++    fn event(
++        self: Arc<Self>,
++        _handle: &Backend,
++        msg: Message<ObjectId, OwnedFd>,
++    ) -> Option<Arc<dyn ObjectData>> {
++        panic!("Received a message on an uninitialized object: {msg:?}");
++    }
++
++    fn destroyed(&self, _object_id: ObjectId) {}
++
++    fn debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("UninitObjectData").finish()
++    }
++}
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/lib.rs b/codex-rs/third_party/wayland-backend-solaris/src/lib.rs
+index a41229476..fbe31db16 100644
+--- a/codex-rs/third_party/wayland-backend-solaris/src/lib.rs
++++ b/codex-rs/third_party/wayland-backend-solaris/src/lib.rs
+@@ -1,28 +1,40 @@
+-// Stub replacement for `wayland-backend` on Solaris.  The real crate
+-// contains a bunch of Unix-specific polling/FD logic that doesn't build
+-// on SunOS.  Codex itself doesn't actually use any of the implementation
+-// so an empty shell satisfies the dependency graph.
++// Stub replacement for `wayland-backend` on Solaris.
++//
++// The real crate contains Unix-specific polling/FD logic (epoll, eventfd,
++// etc.) unavailable on SunOS.  Codex itself never opens a real Wayland
++// socket, so a type-compatible shell is sufficient.
+ 
+-// re-export smallvec like the real crate does; some downstream crates expect it
++#![cfg_attr(unstable_coverage, feature(coverage_attribute))]
++#![allow(missing_docs, missing_debug_implementations)]
++
++/// Re-export of `smallvec`, which is part of `wayland-backend`'s public API.
+ pub extern crate smallvec;
+ 
+-// protocol definitions are simple data types that wayland-client needs
+-pub mod protocol;
++/// Helper macro for quickly building a [`Message`][crate::protocol::Message].
++/// Matches the real crate's macro so generated scanner code compiles.
++#[macro_export]
++macro_rules! message {
++    ($sender_id:expr, $opcode:expr, [$($args:expr),* $(,)?] $(,)?) => {
++        $crate::protocol::Message {
++            sender_id: $sender_id,
++            opcode: $opcode,
++            args: $crate::smallvec::smallvec![$($args),*],
++        }
++    }
++}
+ 
+-// types submodule holds a few error types used by the client API
++pub mod protocol;
+ pub mod types;
+-
+-// bring in the vendored client_api module we created earlier
+ mod client_api;
+ 
+-// expose the same public modules that the real crate provides
++/// Public client module – mirrors `wayland_backend::client`.
+ pub mod client {
+     pub use crate::client_api::*;
+ }
+ 
++/// Public server module – mirrors `wayland_backend::server`.
+ pub mod server {
+     pub use crate::client_api::*;
+ }
+ 
+-// some callers refer to ::Backend directly
+ pub use client::Backend;
+diff --git a/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs b/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs
+index 9008ce79b..962d151b9 100644
+--- a/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs
++++ b/codex-rs/third_party/wayland-backend-solaris/src/protocol.rs
+@@ -1,28 +1,314 @@
+-//! Minimal stub of the `protocol` module.  The real crate defines a
+-//! sizeable amount of machinery for encoding/decoding Wayland messages,
+-//! but Codex never exercises any of that logic.  We only need to provide
+-//! the types that `wayland-client` imports and reexports.
+-
+-/// Description of a protocol interface.  The real type has a number of
+-/// fields, but downstream code only ever makes this an opaque handle.
+-#[derive(Debug, Clone, Copy)]
+-pub struct Interface;
+-
+-/// A (sender, opcode, arguments) tuple.  The concrete fields are never
+-/// inspected by Codex.
++//! Types and utilities for manipulating the Wayland protocol.
++//!
++//! Solaris stub: mirrors the public API of the real `wayland-backend`
++//! `protocol` module without pulling in `wayland-sys` FFI types.
++
++use std::{ffi::CString, os::unix::io::AsRawFd};
++
++/// Describes whether an argument may have a null value.
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum AllowNull {
++    Yes,
++    No,
++}
++
++/// Enum of possible argument types as recognized by the wire
++#[derive(Copy, Clone, PartialEq, Eq, Debug)]
++pub enum ArgumentType {
++    Int,
++    Uint,
++    Fixed,
++    Str(AllowNull),
++    Object(AllowNull),
++    NewId,
++    Array,
++    Fd,
++}
++
++impl ArgumentType {
++    pub fn same_type(self, other: Self) -> bool {
++        std::mem::discriminant(&self) == std::mem::discriminant(&other)
++    }
++}
++
++/// Enum of possible arguments in a protocol message.
+ #[derive(Debug, Clone)]
++#[allow(clippy::box_collection)]
++pub enum Argument<Id, Fd> {
++    Int(i32),
++    Uint(u32),
++    Fixed(i32),
++    Str(Option<Box<CString>>),
++    Object(Id),
++    NewId(Id),
++    Array(Box<Vec<u8>>),
++    Fd(Fd),
++}
++
++impl<Id, Fd> Argument<Id, Fd> {
++    pub fn get_type(&self) -> ArgumentType {
++        match *self {
++            Self::Int(_)    => ArgumentType::Int,
++            Self::Uint(_)   => ArgumentType::Uint,
++            Self::Fixed(_)  => ArgumentType::Fixed,
++            Self::Str(_)    => ArgumentType::Str(AllowNull::Yes),
++            Self::Object(_) => ArgumentType::Object(AllowNull::Yes),
++            Self::NewId(_)  => ArgumentType::NewId,
++            Self::Array(_)  => ArgumentType::Array,
++            Self::Fd(_)     => ArgumentType::Fd,
++        }
++    }
++
++    pub(crate) fn map_fd<T>(self, f: &mut impl FnMut(Fd) -> T) -> Argument<Id, T> {
++        match self {
++            Self::Int(v)    => Argument::Int(v),
++            Self::Uint(v)   => Argument::Uint(v),
++            Self::Fixed(v)  => Argument::Fixed(v),
++            Self::Str(v)    => Argument::Str(v),
++            Self::Object(v) => Argument::Object(v),
++            Self::NewId(v)  => Argument::NewId(v),
++            Self::Array(v)  => Argument::Array(v),
++            Self::Fd(v)     => Argument::Fd(f(v)),
++        }
++    }
++}
++
++impl<Id: PartialEq, Fd: AsRawFd> PartialEq for Argument<Id, Fd> {
++    fn eq(&self, other: &Self) -> bool {
++        match (self, other) {
++            (Self::Int(a),    Self::Int(b))    => a == b,
++            (Self::Uint(a),   Self::Uint(b))   => a == b,
++            (Self::Fixed(a),  Self::Fixed(b))  => a == b,
++            (Self::Str(a),    Self::Str(b))    => a == b,
++            (Self::Object(a), Self::Object(b)) => a == b,
++            (Self::NewId(a),  Self::NewId(b))  => a == b,
++            (Self::Array(a),  Self::Array(b))  => a == b,
++            (Self::Fd(a),     Self::Fd(b))     => a.as_raw_fd() == b.as_raw_fd(),
++            _ => false,
++        }
++    }
++}
++
++impl<Id: Eq, Fd: AsRawFd> Eq for Argument<Id, Fd> {}
++
++impl<Id: std::fmt::Display, Fd: AsRawFd> std::fmt::Display for Argument<Id, Fd> {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::Int(v)    => write!(f, "{v}"),
++            Self::Uint(v)   => write!(f, "{v}"),
++            Self::Fixed(v)  => write!(f, "{:.4}", *v as f64 / 256.0),
++            Self::Str(v)    => write!(f, "{v:?}"),
++            Self::Object(v) => write!(f, "{v}"),
++            Self::NewId(v)  => write!(f, "{v}"),
++            Self::Array(v)  => write!(f, "{v:?}"),
++            Self::Fd(v)     => write!(f, "{}", v.as_raw_fd()),
++        }
++    }
++}
++
++/// Description of a Wayland interface.
++#[derive(Debug)]
++pub struct Interface {
++    pub name: &'static str,
++    pub version: u32,
++    pub requests: &'static [MessageDesc],
++    pub events: &'static [MessageDesc],
++    /// C pointer to the corresponding `wl_interface` (None on Solaris).
++    pub c_ptr: Option<&'static wl_interface>,
++}
++
++// SAFETY: c_ptr is always None; we never actually dereference it.
++unsafe impl Sync for Interface {}
++unsafe impl Send for Interface {}
++
++impl std::fmt::Display for Interface {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str(self.name)
++    }
++}
++
++/// Wire metadata of a given message.
++#[derive(Copy, Clone, Debug)]
++pub struct MessageDesc {
++    pub name: &'static str,
++    pub signature: &'static [ArgumentType],
++    pub since: u32,
++    pub is_destructor: bool,
++    pub child_interface: Option<&'static Interface>,
++    pub arg_interfaces: &'static [&'static Interface],
++}
++
++/// Special interface representing an anonymous object.
++pub static ANONYMOUS_INTERFACE: Interface =
++    Interface { name: "<anonymous>", version: 0, requests: &[], events: &[], c_ptr: None };
++
++/// Description of the protocol-level information of an object.
++#[derive(Copy, Clone, Debug)]
++pub struct ObjectInfo {
++    pub id: u32,
++    pub interface: &'static Interface,
++    pub version: u32,
++}
++
++/// A protocol error returned by the compositor.
++#[derive(Clone, Debug)]
++pub struct ProtocolError {
++    pub code: u32,
++    pub object_id: u32,
++    pub object_interface: String,
++    pub message: String,
++}
++
++impl std::error::Error for ProtocolError {}
++
++impl std::fmt::Display for ProtocolError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(
++            f,
++            "Protocol error {} on object {}@{}: {}",
++            self.code, self.object_interface, self.object_id, self.message
++        )
++    }
++}
++
++/// Number of args stocked inline in a `Message` before heap-allocating.
++// Keep in sync with `wayland_scanner::common::gen_write_body`.
++pub const INLINE_ARGS: usize = 4;
++
++/// Represents a message that has been sent from some object.
++#[derive(Clone, Debug)]
+ pub struct Message<Id, Fd> {
+-    _marker: std::marker::PhantomData<(Id, Fd)>,
++    pub sender_id: Id,
++    pub opcode: u16,
++    pub args: smallvec::SmallVec<[Argument<Id, Fd>; INLINE_ARGS]>,
+ }
+ 
+-/// Additional information about a Wayland object.  Never actually used.
+-#[derive(Debug, Clone, Copy)]
+-pub struct ObjectInfo;
++impl<Id, Fd> Message<Id, Fd> {
++    /// Map a closure over all `Fd` values, changing the `Fd` generic parameter.
++    pub fn map_fd<T>(self, mut f: impl FnMut(Fd) -> T) -> Message<Id, T> {
++        Message {
++            sender_id: self.sender_id,
++            opcode: self.opcode,
++            args: self.args.into_iter().map(move |a| a.map_fd(&mut f)).collect(),
++        }
++    }
++}
+ 
+-/// Error returned by protocol operations.  Never constructed.
+-#[derive(Debug, Clone)]
+-pub enum ProtocolError {}
++impl<Id: PartialEq, Fd: AsRawFd> PartialEq for Message<Id, Fd> {
++    fn eq(&self, other: &Self) -> bool {
++        self.sender_id == other.sender_id
++            && self.opcode == other.opcode
++            && self.args == other.args
++    }
++}
++
++impl<Id: Eq, Fd: AsRawFd> Eq for Message<Id, Fd> {}
++
++/// Returns true if the two interfaces are the same.
++#[inline]
++pub fn same_interface(a: &'static Interface, b: &'static Interface) -> bool {
++    std::ptr::eq(a, b) || a.name == b.name
++}
++
++#[inline]
++#[allow(dead_code)]
++pub(crate) fn same_interface_or_anonymous(
++    a: &'static Interface,
++    b: &'static Interface,
++) -> bool {
++    same_interface(a, b) || same_interface(a, &ANONYMOUS_INTERFACE)
++}
++
++/// An enum value in the protocol.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum WEnum<T> {
++    Value(T),
++    Unknown(u32),
++}
++
++/// Error representing an unknown numeric variant for a [`WEnum`].
++#[derive(Debug, Copy, Clone)]
++pub struct WEnumError {
++    typ: &'static str,
++    value: u32,
++}
++
++impl std::error::Error for WEnumError {}
++
++impl std::fmt::Display for WEnumError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "Unknown numeric value {} for enum {}", self.value, self.typ)
++    }
++}
++
++impl<T> WEnum<T> {
++    #[inline]
++    pub fn into_result(self) -> Result<T, WEnumError> {
++        match self {
++            Self::Value(v) => Ok(v),
++            Self::Unknown(value) => {
++                Err(WEnumError { typ: std::any::type_name::<T>(), value })
++            }
++        }
++    }
++}
++
++impl<T> From<WEnum<T>> for Result<T, WEnumError> {
++    fn from(me: WEnum<T>) -> Self { me.into_result() }
++}
++
++impl<T: TryFrom<u32>> From<u32> for WEnum<T> {
++    fn from(v: u32) -> Self {
++        match T::try_from(v) {
++            Ok(t)  => Self::Value(t),
++            Err(_) => Self::Unknown(v),
++        }
++    }
++}
++
++impl<T: Into<u32>> From<WEnum<T>> for u32 {
++    fn from(enu: WEnum<T>) -> u32 {
++        match enu {
++            WEnum::Unknown(u) => u,
++            WEnum::Value(t)   => t.into(),
++        }
++    }
++}
++
++// ── C-ABI compatible stubs required by wayland-scanner generated code ─────────
++//
++// `wayland-scanner` generates `generate_interfaces!` code that directly
++// names `wayland_backend::protocol::wl_interface` and
++// `wayland_backend::protocol::wl_message` as `#[repr(C)]` structs with
++// specific fields.  On Linux these are re-exported from `wayland-sys`; on
++// Solaris we define equivalent stubs here so the generated code compiles.
++
++#[repr(C)]
++pub struct wl_message {
++    pub name:      *const std::os::raw::c_char,
++    pub signature: *const std::os::raw::c_char,
++    pub types:     *const *const wl_interface,
++}
++
++#[repr(C)]
++pub struct wl_interface {
++    pub name:          *const std::os::raw::c_char,
++    pub version:       std::os::raw::c_int,
++    pub request_count: std::os::raw::c_int,
++    pub requests:      *const wl_message,
++    pub event_count:   std::os::raw::c_int,
++    pub events:        *const wl_message,
++}
++
++impl std::fmt::Debug for wl_interface {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "wl_interface@{self:p}")
++    }
++}
+ 
+-/// A tiny helper enum that some public API exposes.
+-#[derive(Debug, Clone, Copy)]
+-pub enum WEnum {}
++// SAFETY: the structs contain raw pointers to static data only; they are
++// never mutated after construction, so sharing across threads is safe.
++unsafe impl Send for wl_interface {}
++unsafe impl Sync for wl_interface {}
++unsafe impl Send for wl_message {}
++unsafe impl Sync for wl_message {}
+diff --git a/codex-rs/tui/Cargo.toml b/codex-rs/tui/Cargo.toml
+index 594acb33d..5223555b0 100644
+--- a/codex-rs/tui/Cargo.toml
++++ b/codex-rs/tui/Cargo.toml
+@@ -96,8 +96,8 @@ toml = { workspace = true }
+ tracing = { workspace = true, features = ["log"] }
+ tracing-appender = { workspace = true }
+ tracing-subscriber = { workspace = true, features = ["env-filter"] }
+-syntect = "5"
+-two-face = { version = "0.5", default-features = false, features = ["syntect-default-onig"] }
++syntect = { version = "5", default-features = false, features = ["default-fancy"] }
++two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
+ unicode-segmentation = { workspace = true }
+ unicode-width = { workspace = true }
+ url = { workspace = true }
+diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
+index 193c2023f..8e4f2ed6c 100644
+--- a/codex-rs/Cargo.toml
++++ b/codex-rs/Cargo.toml
+@@ -378,6 +378,10 @@ ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
+ # crate (which is Linux/BSD-only) with a minimal path dependency so that
+ # the workspace can build on SunOS.  See docs/solaris_build.md.
+ wayland-backend = { path = "third_party/wayland-backend-solaris" }
++tree-sitter = { path = "third_party/tree-sitter-0.25.10" }
++daemonize = { path = "third_party/daemonize-0.5.0" }
++fs4 = { path = "third_party/fs4-0.13.1" }
++nix = { path = "third_party/nix-0.28.0" }
+ 
+ # Uncomment to debug local changes.
+ # rmcp = { path = "../../rust-sdk/crates/rmcp" }
