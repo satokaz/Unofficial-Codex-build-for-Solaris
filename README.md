@@ -2,8 +2,8 @@
 This repository provides an unofficial Solaris build of Codex.
 
 This is an experimental build. Correct operation is not guaranteed.
-* [codex-tui.gz](https://github.com/satokaz/Unofficial-Codex-build-for-Solaris/releases/download/untagged-daed0e71a2e35efbd918/codex-tui.gz)
-  * codex-tui:      ELF 64-bit LSB executable AMD64 Version 1, dynamically linked, stripped, no debugging information available
+* [codex.gz](https://github.com/satokaz/Unofficial-Codex-build-for-Solaris/releases/download/untagged-4d3e1e659fb0544de0ba/codex.gz)
+  * codex:      ELF 64-bit LSB executable AMD64 Version 1, dynamically linked, stripped, no debugging information available
 
 
 <img width="692" height="761" alt="image" src="https://github.com/user-attachments/assets/e55fbd58-ccba-4595-a0cc-e634c671ebdf" />
