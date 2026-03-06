@@ -149,6 +149,7 @@ CROSSTERM_VER="0.28.1"
 CROSSTERM_DIR="$THIRD_PARTY/crossterm"
 download_crate "crossterm" "$CROSSTERM_VER" "$CROSSTERM_DIR"
 normalize_crlf "$CROSSTERM_DIR/src/event/source/unix/tty.rs"
+normalize_crlf "$CROSSTERM_DIR/src/event.rs"
 
 # codex リポジトリにまとめた Solaris 対応コミットを適用
 apply_repo_patch "$PATCHES/2026-03-05-codex-solaris-commits.patch"

@@ -1108,7 +1108,7 @@ diff --git a/codex-rs/.cargo/config.toml b/codex-rs/.cargo/config.toml
 index 5d5eb8fd6..f26d42e52 100644
 --- a/codex-rs/.cargo/config.toml
 +++ b/codex-rs/.cargo/config.toml
-@@ -9,3 +9,12 @@ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "link-arg=/arm64hazardfree"]
+@@ -9,3 +9,11 @@ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "link-arg=/arm64hazardfree"]
  
  [target.'cfg(all(windows, target_env = "gnu"))']
  rustflags = ["-C", "link-arg=-Wl,--stack,8388608"]
@@ -1119,8 +1119,8 @@ index 5d5eb8fd6..f26d42e52 100644
 +[target.'cfg(target_os = "solaris")']
 +rustflags = []
 +
-+[target.'cfg(target_os = "solaris")'.env]
-+CPPFLAGS = "-DHAVE_ALLOCA_H=1"
++[env]
++CPPFLAGS = { value = "-DHAVE_ALLOCA_H=1", cfg = "target_os = \"solaris\"" }
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
 index 6e13edc7b..6577c9dea 100644
 --- a/codex-rs/Cargo.lock
@@ -1921,6 +1921,142 @@ index 594acb33d..5223555b0 100644
  unicode-segmentation = { workspace = true }
  unicode-width = { workspace = true }
  url = { workspace = true }
+
+diff --git a/codex-rs/tui/src/tui.rs b/codex-rs/tui/src/tui.rs
+index 9d521d1aa..fd8263354 100644
+--- a/codex-rs/tui/src/tui.rs
++++ b/codex-rs/tui/src/tui.rs
+@@ -3,6 +3,7 @@ use std::future::Future;
+ use std::io::IsTerminal;
+ use std::io::Result;
+ use std::io::Stdout;
++use std::io::Write;
+ use std::io::stdin;
+ use std::io::stdout;
+ use std::panic;
+@@ -56,12 +57,21 @@ mod job_control;
+ /// Target frame interval for UI redraw scheduling.
+ pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
+ 
++static MODIFY_OTHER_KEYS_ENABLED: AtomicBool = AtomicBool::new(false);
++
++fn should_enable_modify_other_keys() -> bool {
++    matches!(
++        std::env::var("TERM_PROGRAM").as_deref(),
++        Ok("Apple_Terminal")
++    )
++}
++
+ /// A type alias for the terminal type used in this application
+ pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
+ 
+ pub fn set_modes() -> Result<()> {
+-    execute!(stdout(), EnableBracketedPaste)?;
+-
++    let mut out = stdout();
++    execute!(out, EnableBracketedPaste)?;
+     enable_raw_mode()?;
+     // Enable keyboard enhancement flags so modifiers for keys like Enter are disambiguated.
+     // chat_composer.rs is using a keyboard event listener to enter for any modified keys
+@@ -70,7 +80,7 @@ pub fn set_modes() -> Result<()> {
+     // keyboard enhancement flags. Attempt to enable them, but continue
+     // gracefully if unsupported.
+     let _ = execute!(
+-        stdout(),
++        out,
+         PushKeyboardEnhancementFlags(
+             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                 | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+@@ -78,7 +88,20 @@ pub fn set_modes() -> Result<()> {
+         )
+     );
+ 
+-    let _ = execute!(stdout(), EnableFocusChange);
++    MODIFY_OTHER_KEYS_ENABLED.store(false, Ordering::Relaxed);
++    if should_enable_modify_other_keys() {
++        match execute!(out, EnableModifyOtherKeys) {
++            Ok(()) => {
++                MODIFY_OTHER_KEYS_ENABLED.store(true, Ordering::Relaxed);
++                let _ = out.flush();
++            }
++            Err(err) => {
++                tracing::debug!("failed to enable modifyOtherKeys: {err}");
++            }
++        }
++    }
++
++    let _ = execute!(out, EnableFocusChange);
+     Ok(())
+ }
+ 
+@@ -124,15 +147,62 @@ impl Command for DisableAlternateScroll {
+     }
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct EnableModifyOtherKeys;
++
++impl Command for EnableModifyOtherKeys {
++    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
++        f.write_str("\x1b[>4;2m")
++    }
++
++    #[cfg(windows)]
++    fn execute_winapi(&self) -> Result<()> {
++        Err(std::io::Error::other(
++            "modifyOtherKeys is not implemented for the legacy Windows API.",
++        ))
++    }
++
++    #[cfg(windows)]
++    fn is_ansi_code_supported(&self) -> bool {
++        false
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct DisableModifyOtherKeys;
++
++impl Command for DisableModifyOtherKeys {
++    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
++        f.write_str("\x1b[>4m")
++    }
++
++    #[cfg(windows)]
++    fn execute_winapi(&self) -> Result<()> {
++        Err(std::io::Error::other(
++            "modifyOtherKeys is not implemented for the legacy Windows API.",
++        ))
++    }
++
++    #[cfg(windows)]
++    fn is_ansi_code_supported(&self) -> bool {
++        false
++    }
++}
++
+ fn restore_common(should_disable_raw_mode: bool) -> Result<()> {
+-    // Pop may fail on platforms that didn't support the push; ignore errors.
+-    let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+-    execute!(stdout(), DisableBracketedPaste)?;
+-    let _ = execute!(stdout(), DisableFocusChange);
++    let mut out = stdout();
++    if MODIFY_OTHER_KEYS_ENABLED.swap(false, Ordering::Relaxed) {
++        let _ = execute!(out, DisableModifyOtherKeys);
++        let _ = out.flush();
++    }
++    // Pop may fail on platforms that didn't support the push; ignore errors.
++    let _ = execute!(out, PopKeyboardEnhancementFlags);
++    execute!(out, DisableBracketedPaste)?;
++    let _ = execute!(out, DisableFocusChange);
+     if should_disable_raw_mode {
+         disable_raw_mode()?;
+     }
+-    let _ = execute!(stdout(), crossterm::cursor::Show);
++    let _ = execute!(out, crossterm::cursor::Show);
+     Ok(())
+ }
+ 
 diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
 index 193c2023f..8e4f2ed6c 100644
 --- a/codex-rs/Cargo.toml
@@ -1936,3 +2072,10 @@ index 193c2023f..8e4f2ed6c 100644
  
  # Uncomment to debug local changes.
  # rmcp = { path = "../../rust-sdk/crates/rmcp" }
+ 
+         // Detect keyboard enhancement support before any EventStream is created so the
+         // crossterm poller can acquire its lock without contention.
+-        let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false);
++        let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false)
++            || MODIFY_OTHER_KEYS_ENABLED.load(Ordering::Relaxed);
+         // Cache this to avoid contention with the event reader.
