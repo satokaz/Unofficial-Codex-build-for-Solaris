@@ -2,7 +2,7 @@
 This repository provides an unofficial Solaris build of Codex.
 
 This is an experimental build. Correct operation is not guaranteed.
-* [codex.gz](https://github.com/satokaz/Unofficial-Codex-build-for-Solaris/releases/download/untagged-4d3e1e659fb0544de0ba/codex.gz)
+* [codex_amd64.xz](https://github.com/satokaz/Unofficial-Codex-build-for-Solaris/releases/download/untagged-f1dc9c1cc014167f2e8f/codex_amd64.xz)
   * codex:      ELF 64-bit LSB executable AMD64 Version 1, dynamically linked, stripped, no debugging information available
 * [codex_sparc.gz](https://github.com/satokaz/Unofficial-Codex-build-for-Solaris/releases/download/untagged-4a55439d3eae84f3f147/codex_sparc.gz) (Built from commit 1a363d5) 
   * codex:		ELF 64-bit MSB executable SPARCV9 Version 1, UltraSPARC3 Extensions Required, dynamically linked, stripped, no debugging information available  
